@@ -6,6 +6,7 @@ import io.quarkiverse.mcp.server.Tool;
 import io.quarkiverse.mcp.server.ToolArg;
 import jakarta.inject.Inject;
 import java.io.InputStream;
+import java.util.Collection;
 import java.util.List;
 import java.util.Map;
 import org.acme.model.DiscoveryNode;
@@ -65,7 +66,15 @@ public class CryostatMCP {
                                     """,
                             required = false)
                     List<String> labels) {
-        return graphql.targetNodes(DiscoveryNodeFilter.from(ids, targetIds, names, labels));
+        DiscoveryNodeFilter filter = null;
+        if (isPresent(ids) || isPresent(targetIds) || isPresent(names) || isPresent(labels)) {
+            filter = DiscoveryNodeFilter.from(ids, targetIds, names, labels);
+        }
+        return graphql.targetNodes(filter);
+    }
+
+    static boolean isPresent(Collection<?> filter) {
+        return filter != null && !filter.isEmpty();
     }
 
     @Tool(
