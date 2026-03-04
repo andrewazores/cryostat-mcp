@@ -1,13 +1,12 @@
 package org.acme;
 
-import org.acme.model.HealthResponse;
-import org.eclipse.microprofile.rest.client.inject.RestClient;
-
 import jakarta.inject.Inject;
 import jakarta.ws.rs.GET;
 import jakarta.ws.rs.Path;
 import jakarta.ws.rs.Produces;
 import jakarta.ws.rs.core.MediaType;
+import org.acme.model.HealthResponse;
+import org.eclipse.microprofile.rest.client.inject.RestClient;
 
 @Path("/cryostat")
 public class CryostatResource {
@@ -20,5 +19,4 @@ public class CryostatResource {
     public HealthResponse health() {
         return cryostat.health();
     }
-
 }

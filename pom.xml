@@ -14,7 +14,8 @@
         <quarkus.platform.artifact-id>quarkus-bom</quarkus.platform.artifact-id>
         <quarkus.platform.group-id>io.quarkus.platform</quarkus.platform.group-id>
         <quarkus.platform.version>3.27.2</quarkus.platform.version>
-        <skipITs>true</skipITs>
+        <com.diffplug.spotless.maven.plugin.version>3.3.0</com.diffplug.spotless.maven.plugin.version>
+        <com.google.java-format.version>1.35.0</com.google.java-format.version>
         <surefire-plugin.version>3.5.3</surefire-plugin.version>
     </properties>
 
@@ -98,6 +99,32 @@
                 <configuration>
                     <parameters>true</parameters>
                 </configuration>
+            </plugin>
+            <plugin>
+              <groupId>com.diffplug.spotless</groupId>
+              <artifactId>spotless-maven-plugin</artifactId>
+              <version>${com.diffplug.spotless.maven.plugin.version}</version>
+              <executions>
+                <execution>
+                  <id>spotless</id>
+                  <phase>process-sources</phase>
+                  <goals>
+                    <goal>check</goal>
+                  </goals>
+                </execution>
+              </executions>
+              <configuration>
+                <java>
+                  <googleJavaFormat>
+                    <version>${com.google.java-format.version}</version>
+                    <style>AOSP</style>
+                    <reflowLongStrings>true</reflowLongStrings>
+                  </googleJavaFormat>
+                  <trimTrailingWhitespace />
+                  <endWithNewline />
+                  <removeUnusedImports />
+                </java>
+              </configuration>
             </plugin>
             <plugin>
                 <artifactId>maven-surefire-plugin</artifactId>

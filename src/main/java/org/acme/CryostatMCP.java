@@ -1,13 +1,10 @@
 package org.acme;
 
-import java.util.Map;
-
-import org.eclipse.microprofile.rest.client.inject.RestClient;
-
 import io.quarkiverse.mcp.server.Tool;
-import io.quarkiverse.mcp.server.ToolArg;
 import io.quarkus.qute.Qute;
 import jakarta.inject.Inject;
+import java.util.Map;
+import org.eclipse.microprofile.rest.client.inject.RestClient;
 
 public class CryostatMCP {
 
@@ -20,8 +17,6 @@ public class CryostatMCP {
                 Cryostat server version: {h.cryostatVersion}
                 Git commit hash: {h.build.git.hash}
                 """,
-                Map.of("h", cryostat.health())
-                );
+                Map.of("h", cryostat.health()));
     }
-
 }
