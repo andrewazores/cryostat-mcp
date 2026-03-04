@@ -141,7 +141,8 @@ public class CryostatMCP {
             description =
                     """
                     Scrape the Prometheus-formatted automated analysis metrics. Any recently processed
-                    automated analysis reports will appear here.
+                    automated analysis reports will appear here. These are raw scores. Use the JSON report
+                    output for human-readable explanations and suggestions.
                     Scores of -1 indicate the JDK Flight Recorder event type required for this analysis was not configured.
                     Scores of 0 indicate that no problem was detected.
                     Scores of (0.0, 25.0) indicate that a low severity issue was detected.
@@ -157,7 +158,8 @@ public class CryostatMCP {
                     """
                     Scrape the Prometheus-formatted automated analysis metrics for a specified Target.
                     The most recently processed automated analysis report metrics for this target will be returned,
-                    if any are available.
+                    if any are available. These are raw scores. Use the JSON report output for human-readable
+                    explanations and suggestions.
                     Scores of -1 indicate the JDK Flight Recorder event type required for this analysis was not configured.
                     Scores of 0 indicate that no problem was detected.
                     Scores of (0.0, 25.0) indicate that a low severity issue was detected.
@@ -175,6 +177,9 @@ public class CryostatMCP {
                     Get the JSON-formatted automated analysis report for a specified Target.
                     The most recently processed automated analysis report document for this target will be returned,
                     if any is available.
+                    This is a comprehensive report document containing human-readable explanations, summaries,
+                    and suggestions. For simple problem detection and incident reporting, use the Prometheus-format
+                    metrics scraping tools.
                     """)
     Object getTargetReport(
             @ToolArg(description = "The Target's ID.", required = true) long targetId) {
