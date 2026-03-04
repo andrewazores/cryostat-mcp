@@ -8,7 +8,7 @@ import org.eclipse.microprofile.rest.client.inject.RestClient;
 
 public class CryostatMCP {
 
-    @Inject @RestClient CryostatClient cryostat;
+    @Inject @RestClient CryostatRESTClient cryostat;
 
     @Tool(description = "Get Cryostat server health and configuration")
     String getHealth() {

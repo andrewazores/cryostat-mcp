@@ -12,7 +12,7 @@ import org.eclipse.microprofile.rest.client.inject.RegisterRestClient;
         )
 // FIXME real Cryostat deployments may use Basic or Bearer auth
 @ClientBasicAuth(username = "${cryostat.auth.username}", password = "${cryostat.auth.password}")
-public interface CryostatClient {
+public interface CryostatRESTClient {
 
     @GET
     @Path("/health")
