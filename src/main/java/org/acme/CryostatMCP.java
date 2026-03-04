@@ -47,7 +47,8 @@ public class CryostatMCP {
                             description =
                                     """
                                     List of Target IDs to match. Targets matching any of the given IDs will be selected.
-                                    """)
+                                    """,
+                            required = false)
                     List<Long> targetIds,
             @ToolArg(
                             description =
