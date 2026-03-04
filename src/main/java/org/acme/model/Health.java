@@ -1,6 +1,6 @@
 package org.acme.model;
 
-public record HealthResponse(
+public record Health(
         String cryostatVersion,
         boolean dashboardConfigured,
         boolean dashboardAvailable,
