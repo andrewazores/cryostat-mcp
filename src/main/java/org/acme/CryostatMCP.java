@@ -5,7 +5,6 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import io.quarkiverse.mcp.server.Tool;
 import io.quarkiverse.mcp.server.ToolArg;
 import jakarta.inject.Inject;
-import java.io.InputStream;
 import java.util.Collection;
 import java.util.List;
 import java.util.Map;
@@ -86,7 +85,7 @@ public class CryostatMCP {
     }
 
     @Tool(description = "Get a specific .jfc (XML) JDK Flight Recorder Event Template definition.")
-    InputStream getTargetEventTemplate(
+    String getTargetEventTemplate(
             @ToolArg(description = "The Target's ID.", required = true) long targetId,
             @ToolArg(description = "The event template's templateType.", required = true)
                     String templateType,
