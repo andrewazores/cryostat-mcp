@@ -1,11 +1,11 @@
-package org.acme.model;
+package org.acme.model.graphql;
 
-import java.util.List;
+import java.util.Map;
 
 public record Target(
         long id,
         String connectUrl,
         String alias,
         String jvmId,
-        List<KeyValue> labels,
+        Map<String, String> labels,
         Annotations annotations) {}

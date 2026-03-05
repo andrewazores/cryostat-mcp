@@ -1,5 +1,5 @@
 package org.acme.model;
 
-import java.util.Map;
+import java.util.List;
 
-public record Annotations(Map<String, String> platform, Map<String, String> cryostat) {}
+public record Annotations(List<KeyValue> platform, List<KeyValue> cryostat) {}

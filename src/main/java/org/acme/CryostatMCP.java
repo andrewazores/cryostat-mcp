@@ -13,6 +13,7 @@ import org.acme.model.DiscoveryNodeFilter;
 import org.acme.model.EventTemplate;
 import org.acme.model.Health;
 import org.acme.model.RecordingDescriptor;
+import org.acme.model.Target;
 import org.eclipse.microprofile.rest.client.inject.RestClient;
 
 public class CryostatMCP {
@@ -29,13 +30,39 @@ public class CryostatMCP {
     @Tool(
             description =
                     """
+                    Get the full discovery tree. This is a tree of Discovery Nodes, each of which may have zero or more child Discovery Nodes.
+                    A Discovery Node is considered an "Environment Node" if it has child nodes and no embedded Target, which indicates that it
+                    represents some intermediate object in the deployment environment - for example, a Kubernetes Namespace, Deployment,
+                    ReplicaSet, or Pod. If a Discovery Node has no child nodes then it should have an embedded Target field, which indicates
+                    that it represents a Target application.
+                    The root of the tree is always the Universe node representing everything the Cryostat instance is aware of. The children of
+                    the Universe are aways Realm nodes, representing each distinct Discovery Plugin (Kubernetes API, JDP, Docker/Podman,
+                    Custom Targets, and each individual registered Cryostat Agent instance).
+                    """)
+    DiscoveryNode getDiscoveryTree(
+            @ToolArg(
+                            description =
+                                    """
+                                        Whether the Realms should be merged into a unified node. This is useful in a Kubernetes context, as it allows Cryostat Agent
+                                        instances to appear not as distinct Realms of their own with independent Pod -> ReplicaSet -> Deployment -> Namespace lineages,
+                                        but as a holistic merged view. This also allows the Cryostat Agent instances' subtrees to appear merged with any Kubernetes
+                                        API EndpointSlices-discovered Targets.
+                                    """,
+                            defaultValue = "true")
+                    boolean mergeRealms) {
+        return rest.getDiscoveryTree(mergeRealms);
+    }
+
+    @Tool(
+            description =
+                    """
                     Get a list of all discovered Target applications. Each Target belongs to a Discovery Node. In a Kubernetes context
                     the Discovery Node will be a Pod or equivalent object. Searching for the Target associated with a particular Pod
                     can be done by querying this endpoint with the Pod's name as a filter input. If no filter inputs are provided,
                     the full list of all discovered Targets will be returned. Otherwise, if any filter inputs are provided, then only
                     Targets which match all of the given inputs will be returned.
                     """)
-    List<DiscoveryNode> listTargets(
+    List<org.acme.model.graphql.DiscoveryNode> listTargets(
             @ToolArg(
                             description =
                                     """
@@ -74,6 +101,30 @@ public class CryostatMCP {
 
     static boolean isPresent(Collection<?> filter) {
         return filter != null && !filter.isEmpty();
+    }
+
+    @Tool(
+            description =
+                    """
+                    Get information about a Target from historical database audit log. If the Target application may have been lost,
+                    this tool may still be able to provide information about what the Target was if the Cryostat instance has audit
+                    logging enabled.
+                    """)
+    Target getAuditTarget(
+            @ToolArg(description = "The Target's JVM hash ID.", required = true) String jvmId) {
+        return rest.auditTarget(jvmId);
+    }
+
+    @Tool(
+            description =
+                    """
+                    Get a Target's DiscoveryNode lineage from historical database audit log. If the Cryostat instance has audit logging enabled,
+                    this tool can return information about the Target and all of its DiscoveryNode lineage ancestors up to (but excluding)
+                    the Universe node.
+                    """)
+    DiscoveryNode getAuditTargetLineage(
+            @ToolArg(description = "The Target's JVM hash ID.", required = true) String jvmId) {
+        return rest.auditTargetLineage(jvmId);
     }
 
     @Tool(

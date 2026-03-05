@@ -1,6 +1,11 @@
 package org.acme.model;
 
-import java.util.Map;
+import java.util.List;
 
 public record DiscoveryNode(
-        long id, String name, String nodeType, Map<String, String> labels, Target target) {}
+        long id,
+        String name,
+        String nodeType,
+        List<KeyValue> labels,
+        List<DiscoveryNode> children,
+        Target target) {}
