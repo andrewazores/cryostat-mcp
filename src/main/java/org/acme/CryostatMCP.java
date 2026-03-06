@@ -251,6 +251,11 @@ public class CryostatMCP {
                     each JFR event type is mapped to a table sharing the event's name. Each event attribute
                     is mapped to a column of that table. The target's event templates can be inspected to
                     determine which events may be found in a given recording.
+                    The JFR Calcite converter does NOT flatten nested fields like objectClass.name into separate
+                    top-level columns. All complex objects remain as single columns containing serialized structures.
+                    Fields like objectClass and eventThread are returned as formatted string representations of
+                    their internal structure, not as separate queryable columns.
+                    Queries cannot use "objectClass"."name", "objectClass.name", or "objectClass"['name'] syntax.
                     The following additional struct type is available:
                         RecordedThread {
                             osName
@@ -276,6 +281,13 @@ public class CryostatMCP {
                                 GROUP BY TRUNCATE_STACKTRACE("stackTrace", 40)
                                 ORDER BY SUM("weight") DESC
                                 LIMIT 10
+                    Retrieve the top 20 classes by allocation count:
+                        SELECT CLASS_NAME("objectClass") AS "class_name",
+                                       COUNT(*) AS "allocation_count"
+                                FROM "JFR"."jdk.ObjectAllocationSample"
+                                GROUP BY CLASS_NAME("objectClass")
+                                ORDER BY COUNT(*) DESC
+                                LIMIT 20
                     """)
     List<List<String>> executeQuery(
             @ToolArg(description = "The Target's JVM hash ID.", required = true) String jvmId,
