@@ -17,6 +17,7 @@ import org.acme.model.Target;
 import org.eclipse.microprofile.rest.client.annotation.ClientHeaderParam;
 import org.eclipse.microprofile.rest.client.inject.RegisterRestClient;
 import org.jboss.resteasy.reactive.RestForm;
+import org.jboss.resteasy.reactive.RestQuery;
 
 @RegisterRestClient(
         configKey = "cryostat",
@@ -71,7 +72,7 @@ public interface CryostatRESTClient {
 
     @GET
     @Path("/api/v4.1/metrics/reports")
-    String scrapeMetrics();
+    String scrapeMetrics(@RestQuery double minTargetScore);
 
     @GET
     @Path("/api/v4.1/metrics/reports/{jvmId}")

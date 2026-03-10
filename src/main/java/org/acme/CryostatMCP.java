@@ -206,8 +206,19 @@ public class CryostatMCP {
                     Scores of [25.0, 75.0) indicate that a medium severity issue was detected.
                     Scores of [75.0, 100.0] indicate that a high severity issue was detected.
                     """)
-    String scrapeMetrics() {
-        return rest.scrapeMetrics();
+    String scrapeMetrics(
+            @ToolArg(
+                            description =
+                                    """
+                                    Filter results by a minimum score. If a Target has any rule result greater than or equal
+                                    to this value, then all rule results for that Target will be included. For example,
+                                    setting this to 25.0 indicates that the response should not include any results for
+                                    Targets which have no medium or high severity issues, and will include all results for
+                                    all Targets which have at least one medium or high severity issue.
+                                    """,
+                            defaultValue = "-1.0")
+                    double minTargetScore) {
+        return rest.scrapeMetrics(minTargetScore);
     }
 
     @Tool(
