@@ -24,6 +24,7 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.net.http.WebSocket;
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Comparator;
 import java.util.List;
@@ -35,6 +36,7 @@ import java.util.concurrent.CompletionStage;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Supplier;
 
 import io.cryostat.mcp.model.ActiveRecordingsFilter;
@@ -52,6 +54,7 @@ import io.cryostat.mcp.model.graphql.TargetNodeForStop;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.ws.rs.WebApplicationException;
+import jakarta.ws.rs.core.Response;
 
 public class CryostatMCP {
 
@@ -59,6 +62,8 @@ public class CryostatMCP {
     static final long ARCHIVE_INITIAL_DELAY_MS = 3_000L;
     static final long ARCHIVE_RETRY_DELAY_MS = 5_000L;
     static final Duration REPORT_NOTIFICATION_TIMEOUT = Duration.ofSeconds(30);
+    static final String ALLOW_INSECURE_CREDENTIALS_PROPERTY =
+            CredentialTransportPolicy.ALLOW_INSECURE_CREDENTIALS_PROPERTY;
 
     private final CryostatRESTClient rest;
     private final CryostatGraphQLClient graphql;
@@ -322,6 +327,14 @@ public class CryostatMCP {
         return stripped.isEmpty() ? null : stripped;
     }
 
+    /**
+     * Refuse to send an {@code Authorization} header over a cleartext transport. See {@link
+     * CredentialTransportPolicy} for the policy applied here and by the REST and GraphQL clients.
+     */
+    void requireSecureTransportForCredentials(URI uri, String credential) throws IOException {
+        CredentialTransportPolicy.requireSecureTransport(uri, credential);
+    }
+
     public InputStream downloadArchivedRecording(String jvmId, String filename) throws IOException {
         String downloadUrl =
                 listTargetArchivedRecordings(jvmId).stream()
@@ -333,9 +346,11 @@ public class CryostatMCP {
                                         new NoSuchElementException(
                                                 "Archived recording not found: " + filename))
                         .downloadUrl();
-        HttpRequest.Builder requestBuilder = HttpRequest.newBuilder(resolveUri(downloadUrl)).GET();
-        String authorizationHeader = this.authorizationHeader.get();
-        if (authorizationHeader != null && !authorizationHeader.isEmpty()) {
+        URI resolvedDownloadUri = resolveUri(downloadUrl);
+        HttpRequest.Builder requestBuilder = HttpRequest.newBuilder(resolvedDownloadUri).GET();
+        String authorizationHeader = normalizeHeader(this.authorizationHeader.get());
+        requireSecureTransportForCredentials(resolvedDownloadUri, authorizationHeader);
+        if (authorizationHeader != null) {
             requestBuilder.header("Authorization", authorizationHeader);
         }
         try {
@@ -375,7 +390,8 @@ public class CryostatMCP {
                                 + response.statusCode());
             }
             String jobId = response.body().trim();
-            boolean success = listener.awaitJob(jobId, REPORT_NOTIFICATION_TIMEOUT);
+            listener.subscribeToJob(jobId);
+            boolean success = listener.awaitJob(REPORT_NOTIFICATION_TIMEOUT);
             if (!success) {
                 throw new IOException("Report generation failed for: " + filename);
             }
@@ -406,6 +422,46 @@ public class CryostatMCP {
                         () ->
                                 new NoSuchElementException(
                                         "Uploaded recording not found: " + filename));
+    }
+
+    public ArchivedRecordingDescriptor synthesizeRecordingServerSide(
+            String jvmId, long fromMs, long toMs) throws IOException {
+        long fromSeconds = fromMs / 1000L;
+        long toSeconds = toMs / 1000L;
+        SynthesisNotificationListener listener = new SynthesisNotificationListener();
+        WebSocket webSocket = connectNotifications(listener);
+        try {
+            try (Response response = rest.synthesizeRecording(jvmId, fromSeconds, toSeconds)) {
+                int status = response.getStatus();
+                if (status == 200) {
+                    return response.readEntity(ArchivedRecordingDescriptor.class);
+                }
+                if (status == 400) {
+                    throw new IOException(
+                            "No archived recording candidates found on server for jvmId: " + jvmId);
+                }
+                if (status != 202) {
+                    throw new IOException(
+                            "Unexpected response from server-side synthesis for jvmId "
+                                    + jvmId
+                                    + ": HTTP "
+                                    + status);
+                }
+                String jobId = response.readEntity(String.class).trim();
+                listener.subscribeToJob(jobId);
+            }
+            String recordingName = listener.awaitJob(REPORT_NOTIFICATION_TIMEOUT);
+            return listTargetArchivedRecordings(jvmId).stream()
+                    .flatMap(dir -> dir.recordings().stream())
+                    .filter(r -> r.name().equals(recordingName))
+                    .findFirst()
+                    .orElseThrow(
+                            () ->
+                                    new NoSuchElementException(
+                                            "Synthesized recording not found: " + recordingName));
+        } finally {
+            closeWebSocket(webSocket);
+        }
     }
 
     public List<List<String>> executeQuery(String jvmId, String filename, String query) {
@@ -530,6 +586,7 @@ public class CryostatMCP {
     HttpResponse<String> sendStringGet(URI uri) throws IOException {
         HttpRequest.Builder requestBuilder = HttpRequest.newBuilder(uri).GET();
         String authorizationHeader = normalizeHeader(this.authorizationHeader.get());
+        requireSecureTransportForCredentials(uri, authorizationHeader);
         if (authorizationHeader != null) {
             requestBuilder.header("Authorization", authorizationHeader);
         }
@@ -541,21 +598,43 @@ public class CryostatMCP {
         }
     }
 
-    private WebSocket connectNotifications(ReportNotificationListener listener) throws IOException {
+    private WebSocket connectNotifications(WebSocket.Listener listener) throws IOException {
         URI notificationsUri = notificationsUri();
         var builder = httpClient.newWebSocketBuilder();
         String authorizationHeader = normalizeHeader(this.authorizationHeader.get());
+        requireSecureTransportForCredentials(notificationsUri, authorizationHeader);
         if (authorizationHeader != null) {
             builder.header("Authorization", authorizationHeader);
         }
+        CompletableFuture<WebSocket> future = builder.buildAsync(notificationsUri, listener);
         try {
-            return builder.buildAsync(notificationsUri, listener).get();
+            return future.get(REPORT_NOTIFICATION_TIMEOUT.toMillis(), TimeUnit.MILLISECONDS);
         } catch (InterruptedException e) {
+            abandonConnect(future);
             Thread.currentThread().interrupt();
             throw new IOException("Interrupted while connecting notifications WebSocket", e);
         } catch (ExecutionException e) {
             throw new IOException("Failed to connect notifications WebSocket", e.getCause());
+        } catch (TimeoutException e) {
+            abandonConnect(future);
+            throw new IOException("Timed out connecting notifications WebSocket", e);
         }
+    }
+
+    /**
+     * Give up on a pending WebSocket connection attempt, closing the connection if it does
+     * eventually succeed. The future is deliberately not cancelled: cancelling completes it
+     * immediately with a {@link java.util.concurrent.CancellationException}, so the later
+     * completion carrying the real WebSocket is discarded and its TCP connection is left open with
+     * no reference to abort it.
+     */
+    private static void abandonConnect(CompletableFuture<WebSocket> future) {
+        future.whenComplete(
+                (ws, t) -> {
+                    if (ws != null) {
+                        ws.abort();
+                    }
+                });
     }
 
     private URI notificationsUri() {
@@ -575,10 +654,28 @@ public class CryostatMCP {
         }
     }
 
-    private final class ReportNotificationListener implements WebSocket.Listener {
-        private final CompletableFuture<Boolean> result = new CompletableFuture<>();
+    private final class SynthesisNotificationListener implements WebSocket.Listener {
+        private final CompletableFuture<String> result = new CompletableFuture<>();
         private final StringBuilder text = new StringBuilder();
-        private volatile String awaitedJobId;
+        private final ReentrantLock lock = new ReentrantLock();
+        private final List<String> buffer = new ArrayList<>();
+        private String awaitedJobId;
+
+        void subscribeToJob(String jobId) {
+            lock.lock();
+            try {
+                this.awaitedJobId = jobId;
+                for (String buffered : buffer) {
+                    processMessage(buffered);
+                    if (result.isDone()) {
+                        break;
+                    }
+                }
+                buffer.clear();
+            } finally {
+                lock.unlock();
+            }
+        }
 
         @Override
         public void onOpen(WebSocket webSocket) {
@@ -602,8 +699,117 @@ public class CryostatMCP {
             result.completeExceptionally(error);
         }
 
-        boolean awaitJob(String jobId, Duration timeout) throws IOException {
-            awaitedJobId = jobId;
+        String awaitJob(Duration timeout) throws IOException {
+            try {
+                return result.get(timeout.toMillis(), TimeUnit.MILLISECONDS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new IOException("Interrupted while awaiting synthesis notification", e);
+            } catch (ExecutionException e) {
+                throw new IOException("Failed while awaiting synthesis notification", e.getCause());
+            } catch (TimeoutException e) {
+                throw new IOException(
+                        "Timed out awaiting synthesis notification for job: " + awaitedJobId, e);
+            }
+        }
+
+        private void handleMessage(String json) {
+            lock.lock();
+            try {
+                if (awaitedJobId == null) {
+                    buffer.add(json);
+                    return;
+                }
+                processMessage(json);
+            } finally {
+                lock.unlock();
+            }
+        }
+
+        private void processMessage(String json) {
+            try {
+                Map<?, ?> payload = mapper.readValue(json, Map.class);
+                Object metaObj = payload.get("meta");
+                Object messageObj = payload.get("message");
+                if (!(metaObj instanceof Map<?, ?> meta)
+                        || !(messageObj instanceof Map<?, ?> message)) {
+                    return;
+                }
+                Object categoryObj = meta.get("category");
+                Object jobIdObj = message.get("jobId");
+                if (!(categoryObj instanceof String category)
+                        || !(jobIdObj instanceof String jobId)
+                        || !jobId.equals(awaitedJobId)) {
+                    return;
+                }
+                if ("RecordingSynthesisComplete".equals(category)) {
+                    Object recordingObj = message.get("recording");
+                    if (recordingObj instanceof Map<?, ?> recording) {
+                        Object nameObj = recording.get("name");
+                        if (nameObj instanceof String name) {
+                            result.complete(name);
+                            return;
+                        }
+                    }
+                    result.completeExceptionally(
+                            new IOException("Missing recording name in synthesis notification"));
+                } else if ("RecordingSynthesisFailure".equals(category)) {
+                    result.completeExceptionally(
+                            new IOException(
+                                    "Server-side recording synthesis failed for job: " + jobId));
+                }
+            } catch (JsonProcessingException e) {
+                // ignore unrelated or malformed notifications
+            }
+        }
+    }
+
+    private final class ReportNotificationListener implements WebSocket.Listener {
+        private final CompletableFuture<Boolean> result = new CompletableFuture<>();
+        private final StringBuilder text = new StringBuilder();
+        private final ReentrantLock lock = new ReentrantLock();
+        private final List<String> buffer = new ArrayList<>();
+        private String awaitedJobId;
+
+        void subscribeToJob(String jobId) {
+            lock.lock();
+            try {
+                this.awaitedJobId = jobId;
+                for (String buffered : buffer) {
+                    processMessage(buffered);
+                    if (result.isDone()) {
+                        break;
+                    }
+                }
+                buffer.clear();
+            } finally {
+                lock.unlock();
+            }
+        }
+
+        @Override
+        public void onOpen(WebSocket webSocket) {
+            webSocket.request(1);
+            WebSocket.Listener.super.onOpen(webSocket);
+        }
+
+        @Override
+        public CompletionStage<?> onText(WebSocket webSocket, CharSequence data, boolean last) {
+            text.append(data);
+            if (last) {
+                handleMessage(text.toString());
+                text.setLength(0);
+            }
+            webSocket.request(1);
+            return CompletableFuture.completedFuture(null);
+        }
+
+        @Override
+        public void onError(WebSocket webSocket, Throwable error) {
+            result.completeExceptionally(error);
+        }
+
+        boolean awaitJob(Duration timeout) throws IOException {
             try {
                 return result.get(timeout.toMillis(), TimeUnit.MILLISECONDS);
             } catch (InterruptedException e) {
@@ -613,11 +819,24 @@ public class CryostatMCP {
                 throw new IOException("Failed while awaiting report notification", e.getCause());
             } catch (TimeoutException e) {
                 throw new IOException(
-                        "Timed out awaiting report notification for job: " + jobId, e);
+                        "Timed out awaiting report notification for job: " + awaitedJobId, e);
             }
         }
 
         private void handleMessage(String json) {
+            lock.lock();
+            try {
+                if (awaitedJobId == null) {
+                    buffer.add(json);
+                    return;
+                }
+                processMessage(json);
+            } finally {
+                lock.unlock();
+            }
+        }
+
+        private void processMessage(String json) {
             try {
                 Map<?, ?> payload = mapper.readValue(json, Map.class);
                 Object metaObj = payload.get("meta");

@@ -24,8 +24,11 @@ import java.io.IOException;
 import java.net.InetSocketAddress;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Base64;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
@@ -891,6 +894,120 @@ class CryostatMCPTest {
     }
 
     @Test
+    void credentialedRequestOverRemoteCleartextIsRefused() {
+        CryostatMCP mcp =
+                new CryostatMCP(
+                        URI.create("http://cryostat.example.com:8181"),
+                        "Bearer secret-token",
+                        restClient,
+                        graphqlClient,
+                        objectMapper);
+
+        IOException e =
+                assertThrows(
+                        IOException.class,
+                        () ->
+                                mcp.sendStringGet(
+                                        URI.create(
+                                                "http://cryostat.example.com:8181/api/v4/health")));
+        assertTrue(
+                e.getMessage().contains("Refusing to send Authorization credentials"),
+                e.getMessage());
+        assertFalse(e.getMessage().contains("secret-token"), e.getMessage());
+    }
+
+    @Test
+    void credentialedNotificationsConnectionOverRemoteCleartextIsRefused() {
+        String jvmId = "test-jvm-id";
+        String filename = "recording.jfr";
+        ArchivedRecordingDescriptor descriptor =
+                new ArchivedRecordingDescriptor(
+                        jvmId, filename, null, "/api/v4/reports/test", null, 0L, 0L);
+        when(restClient.targetArchivedRecordings(jvmId))
+                .thenReturn(
+                        List.of(new ArchivedRecordingDirectory(null, jvmId, List.of(descriptor))));
+        CryostatMCP mcp =
+                new CryostatMCP(
+                        URI.create("http://cryostat.example.com:8181"),
+                        "Bearer secret-token",
+                        restClient,
+                        graphqlClient,
+                        objectMapper);
+
+        IOException e =
+                assertThrows(IOException.class, () -> mcp.getArchivedReport(jvmId, filename));
+        assertTrue(
+                e.getMessage().contains("Refusing to send Authorization credentials"),
+                e.getMessage());
+        assertTrue(e.getMessage().contains("ws://cryostat.example.com:8181"), e.getMessage());
+    }
+
+    @Test
+    void unauthenticatedRequestOverRemoteCleartextIsAllowed() throws Exception {
+        HttpServer server = HttpServer.create(new InetSocketAddress(0), 0);
+        server.createContext(
+                "/api/v4/health", exchange -> writeResponse(exchange, "{}", "application/json"));
+        server.start();
+        try {
+            // no credentials configured: nothing to leak, so cleartext stays supported
+            CryostatMCP mcp =
+                    new CryostatMCP(
+                            URI.create("http://127.0.0.1:" + server.getAddress().getPort()),
+                            null,
+                            restClient,
+                            graphqlClient,
+                            objectMapper);
+            assertEquals(
+                    200,
+                    mcp.sendStringGet(
+                                    URI.create(
+                                            "http://127.0.0.1:"
+                                                    + server.getAddress().getPort()
+                                                    + "/api/v4/health"))
+                            .statusCode());
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    void secureTransportsAndLoopbackCleartextCarryCredentials() {
+        assertDoesNotThrow(
+                () -> {
+                    cryostatMCP.requireSecureTransportForCredentials(
+                            URI.create("https://cryostat.example.com/api/v4/health"), "Bearer t");
+                    cryostatMCP.requireSecureTransportForCredentials(
+                            URI.create("wss://cryostat.example.com/api/notifications"), "Bearer t");
+                    cryostatMCP.requireSecureTransportForCredentials(
+                            URI.create("ws://localhost:8181/api/notifications"), "Bearer t");
+                    cryostatMCP.requireSecureTransportForCredentials(
+                            URI.create("http://127.0.0.1:8181/api/v4/health"), "Bearer t");
+                    cryostatMCP.requireSecureTransportForCredentials(
+                            URI.create("ws://[::1]:8181/api/notifications"), "Bearer t");
+                    // no credential to protect
+                    cryostatMCP.requireSecureTransportForCredentials(
+                            URI.create("ws://cryostat.example.com/api/notifications"), null);
+                });
+    }
+
+    @Test
+    void remoteCleartextWithCredentialsRequiresExplicitOptIn() throws Exception {
+        URI insecure = URI.create("ws://cryostat.namespace.svc:8181/api/notifications");
+
+        assertThrows(
+                IOException.class,
+                () -> cryostatMCP.requireSecureTransportForCredentials(insecure, "Bearer t"));
+
+        System.setProperty(CryostatMCP.ALLOW_INSECURE_CREDENTIALS_PROPERTY, "true");
+        try {
+            assertDoesNotThrow(
+                    () -> cryostatMCP.requireSecureTransportForCredentials(insecure, "Bearer t"));
+        } finally {
+            System.clearProperty(CryostatMCP.ALLOW_INSECURE_CREDENTIALS_PROPERTY);
+        }
+    }
+
+    @Test
     void testGetArchivedReportResolvesRelativeUrlAgainstBaseUri() throws Exception {
         String jvmId = "test-jvm-id";
         String filename = "recording.jfr";
@@ -1065,6 +1182,112 @@ class CryostatMCPTest {
     }
 
     @Test
+    void testSynthesizeRecordingServerSideReturnsDescriptorOn200() throws Exception {
+        String jvmId = "jvm-001";
+        ArchivedRecordingDescriptor expected =
+                new ArchivedRecordingDescriptor(jvmId, "rec.jfr", null, null, null, 0L, 0L);
+        Response response = mock(Response.class);
+        when(response.getStatus()).thenReturn(200);
+        when(response.readEntity(ArchivedRecordingDescriptor.class)).thenReturn(expected);
+        when(restClient.synthesizeRecording(eq(jvmId), eq(1L), eq(2L))).thenReturn(response);
+
+        HttpServer server = startMinimalWebSocketServer();
+        try {
+            CryostatMCP mcp =
+                    new CryostatMCP(
+                            URI.create("http://localhost:" + server.getAddress().getPort()),
+                            null,
+                            restClient,
+                            graphqlClient,
+                            objectMapper);
+            ArchivedRecordingDescriptor result =
+                    mcp.synthesizeRecordingServerSide(jvmId, 1_000L, 2_000L);
+            assertSame(expected, result);
+            verify(restClient).synthesizeRecording(jvmId, 1L, 2L);
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    void testSynthesizeRecordingServerSideThrowsOn400() throws Exception {
+        String jvmId = "jvm-001";
+        Response response = mock(Response.class);
+        when(response.getStatus()).thenReturn(400);
+        when(restClient.synthesizeRecording(eq(jvmId), anyLong(), anyLong())).thenReturn(response);
+
+        HttpServer server = startMinimalWebSocketServer();
+        try {
+            CryostatMCP mcp =
+                    new CryostatMCP(
+                            URI.create("http://localhost:" + server.getAddress().getPort()),
+                            null,
+                            restClient,
+                            graphqlClient,
+                            objectMapper);
+            IOException ex =
+                    assertThrows(
+                            IOException.class,
+                            () -> mcp.synthesizeRecordingServerSide(jvmId, 1_000L, 2_000L));
+            assertTrue(ex.getMessage().contains(jvmId));
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    void testSynthesizeRecordingServerSideThrowsOnUnexpectedStatus() throws Exception {
+        String jvmId = "jvm-001";
+        Response response = mock(Response.class);
+        when(response.getStatus()).thenReturn(500);
+        when(restClient.synthesizeRecording(eq(jvmId), anyLong(), anyLong())).thenReturn(response);
+
+        HttpServer server = startMinimalWebSocketServer();
+        try {
+            CryostatMCP mcp =
+                    new CryostatMCP(
+                            URI.create("http://localhost:" + server.getAddress().getPort()),
+                            null,
+                            restClient,
+                            graphqlClient,
+                            objectMapper);
+            IOException ex =
+                    assertThrows(
+                            IOException.class,
+                            () -> mcp.synthesizeRecordingServerSide(jvmId, 1_000L, 2_000L));
+            assertTrue(ex.getMessage().contains("500"));
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    void testSynthesizeRecordingServerSideConvertsMillisecondsToSeconds() throws Exception {
+        String jvmId = "jvm-001";
+        ArchivedRecordingDescriptor expected =
+                new ArchivedRecordingDescriptor(jvmId, "rec.jfr", null, null, null, 0L, 0L);
+        Response response = mock(Response.class);
+        when(response.getStatus()).thenReturn(200);
+        when(response.readEntity(ArchivedRecordingDescriptor.class)).thenReturn(expected);
+        when(restClient.synthesizeRecording(eq(jvmId), eq(10L), eq(20L))).thenReturn(response);
+
+        HttpServer server = startMinimalWebSocketServer();
+        try {
+            CryostatMCP mcp =
+                    new CryostatMCP(
+                            URI.create("http://localhost:" + server.getAddress().getPort()),
+                            null,
+                            restClient,
+                            graphqlClient,
+                            objectMapper);
+            mcp.synthesizeRecordingServerSide(jvmId, 10_000L, 20_000L);
+            verify(restClient).synthesizeRecording(jvmId, 10L, 20L);
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
     void testQueryExampleRecord() {
         String description = "Test description";
         String query = "SELECT * FROM test";
@@ -1086,6 +1309,39 @@ class CryostatMCPTest {
         exchange.sendResponseHeaders(200, bytes.length);
         try (var out = exchange.getResponseBody()) {
             out.write(bytes);
+        }
+    }
+
+    private static HttpServer startMinimalWebSocketServer() throws IOException {
+        HttpServer server = HttpServer.create(new InetSocketAddress(0), 0);
+        server.createContext(
+                "/api/notifications",
+                exchange -> {
+                    String key = exchange.getRequestHeaders().getFirst("Sec-WebSocket-Key");
+                    if (key == null) {
+                        exchange.sendResponseHeaders(400, -1);
+                        exchange.close();
+                        return;
+                    }
+                    String accept = computeWebSocketAccept(key);
+                    exchange.getResponseHeaders().add("Upgrade", "websocket");
+                    exchange.getResponseHeaders().add("Connection", "Upgrade");
+                    exchange.getResponseHeaders().add("Sec-WebSocket-Accept", accept);
+                    exchange.sendResponseHeaders(101, -1);
+                    exchange.close();
+                });
+        server.start();
+        return server;
+    }
+
+    private static String computeWebSocketAccept(String key) {
+        try {
+            String combined = key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
+            MessageDigest sha1 = MessageDigest.getInstance("SHA-1");
+            byte[] digest = sha1.digest(combined.getBytes(StandardCharsets.UTF_8));
+            return Base64.getEncoder().encodeToString(digest);
+        } catch (NoSuchAlgorithmException e) {
+            throw new IllegalStateException("SHA-1 not available", e);
         }
     }
 }
