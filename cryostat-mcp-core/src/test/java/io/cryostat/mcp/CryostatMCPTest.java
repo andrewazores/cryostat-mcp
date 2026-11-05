@@ -453,7 +453,8 @@ class CryostatMCPTest {
                         eq(duration),
                         eq(true),
                         eq(expectedMetadata),
-                        eq(true)))
+                        eq(true),
+                        eq(List.of())))
                 .thenReturn(mockDescriptor);
 
         RecordingDescriptor result =
@@ -471,7 +472,8 @@ class CryostatMCPTest {
                         duration,
                         true,
                         expectedMetadata,
-                        true);
+                        true,
+                        List.of());
     }
 
     @Test
@@ -500,7 +502,198 @@ class CryostatMCPTest {
                         anyLong(),
                         anyBoolean(),
                         anyString(),
-                        anyBoolean());
+                        anyBoolean(),
+                        any());
+    }
+
+    @Test
+    void testStartTargetRecordingWithAsprofEvents() throws JsonProcessingException {
+        long targetId = 123L;
+        String recordingName = "test-recording";
+        String templateName = "Profiling";
+        String templateType = "TARGET";
+        long duration = 60L;
+        List<String> asprofEvents = List.of("cpu", "alloc");
+
+        RecordingDescriptor mockDescriptor = mock(RecordingDescriptor.class);
+        String expectedMetadata = "{\"labels\":{\"autoanalyze\":\"true\"}}";
+
+        when(restClient.health()).thenReturn(health("4.3.0"));
+        when(objectMapper.writeValueAsString(any())).thenReturn(expectedMetadata);
+        when(restClient.startRecording(
+                        eq(targetId),
+                        eq(recordingName),
+                        eq("template=Profiling,type=TARGET"),
+                        eq(duration),
+                        eq(true),
+                        eq(expectedMetadata),
+                        eq(true),
+                        eq(asprofEvents)))
+                .thenReturn(mockDescriptor);
+
+        RecordingDescriptor result =
+                cryostatMCP.startTargetRecording(
+                        targetId,
+                        recordingName,
+                        templateName,
+                        templateType,
+                        duration,
+                        asprofEvents);
+
+        assertSame(mockDescriptor, result);
+        verify(restClient)
+                .startRecording(
+                        targetId,
+                        recordingName,
+                        "template=Profiling,type=TARGET",
+                        duration,
+                        true,
+                        expectedMetadata,
+                        true,
+                        asprofEvents);
+    }
+
+    @Test
+    void testStartTargetRecordingWithAsprofEventsFailsFastOnOldServer() {
+        long targetId = 123L;
+        List<String> asprofEvents = List.of("cpu");
+
+        when(restClient.health()).thenReturn(health("4.2.1"));
+
+        assertThrows(
+                UnsupportedOperationException.class,
+                () ->
+                        cryostatMCP.startTargetRecording(
+                                targetId,
+                                "test-recording",
+                                "Profiling",
+                                "TARGET",
+                                60L,
+                                asprofEvents));
+
+        verify(restClient, never())
+                .startRecording(
+                        anyLong(),
+                        anyString(),
+                        anyString(),
+                        anyLong(),
+                        anyBoolean(),
+                        anyString(),
+                        anyBoolean(),
+                        any());
+    }
+
+    @Test
+    void testGetTargetAsyncProfilerStatus() {
+        long targetId = 123L;
+        io.cryostat.mcp.model.AsyncProfilerStatus mockStatus =
+                new io.cryostat.mcp.model.AsyncProfilerStatus(
+                        io.cryostat.mcp.model.AsyncProfilerStatus.ProfilerStatus.STOPPED,
+                        Map.of("perf_events", List.of("cpu")));
+        when(restClient.targetAsyncProfilerStatus(targetId)).thenReturn(mockStatus);
+
+        io.cryostat.mcp.model.AsyncProfilerStatus result =
+                cryostatMCP.getTargetAsyncProfilerStatus(targetId);
+
+        assertSame(mockStatus, result);
+        verify(restClient).targetAsyncProfilerStatus(targetId);
+    }
+
+    @Test
+    void testListTargetAsyncProfilerEventTypes() {
+        long targetId = 123L;
+        Map<String, List<String>> availableEvents = Map.of("perf_events", List.of("cpu", "wall"));
+        io.cryostat.mcp.model.AsyncProfilerStatus mockStatus =
+                new io.cryostat.mcp.model.AsyncProfilerStatus(
+                        io.cryostat.mcp.model.AsyncProfilerStatus.ProfilerStatus.RUNNING,
+                        availableEvents);
+        when(restClient.targetAsyncProfilerStatus(targetId)).thenReturn(mockStatus);
+
+        Map<String, List<String>> result = cryostatMCP.listTargetAsyncProfilerEventTypes(targetId);
+
+        assertEquals(availableEvents, result);
+    }
+
+    @Test
+    void testTargetSupportsAsyncProfilerTrueWhenRunningWithEvents() {
+        long targetId = 123L;
+        io.cryostat.mcp.model.AsyncProfilerStatus mockStatus =
+                new io.cryostat.mcp.model.AsyncProfilerStatus(
+                        io.cryostat.mcp.model.AsyncProfilerStatus.ProfilerStatus.RUNNING,
+                        Map.of("perf_events", List.of("cpu")));
+        when(restClient.targetAsyncProfilerStatus(targetId)).thenReturn(mockStatus);
+
+        assertTrue(cryostatMCP.targetSupportsAsyncProfiler(targetId));
+    }
+
+    @Test
+    void testTargetSupportsAsyncProfilerTrueWhenStoppedWithEvents() {
+        long targetId = 123L;
+        io.cryostat.mcp.model.AsyncProfilerStatus mockStatus =
+                new io.cryostat.mcp.model.AsyncProfilerStatus(
+                        io.cryostat.mcp.model.AsyncProfilerStatus.ProfilerStatus.STOPPED,
+                        Map.of("perf_events", List.of("cpu")));
+        when(restClient.targetAsyncProfilerStatus(targetId)).thenReturn(mockStatus);
+
+        assertTrue(cryostatMCP.targetSupportsAsyncProfiler(targetId));
+    }
+
+    @Test
+    void testTargetSupportsAsyncProfilerFalseWhenNoEventsAvailable() {
+        long targetId = 123L;
+        io.cryostat.mcp.model.AsyncProfilerStatus mockStatus =
+                new io.cryostat.mcp.model.AsyncProfilerStatus(
+                        io.cryostat.mcp.model.AsyncProfilerStatus.ProfilerStatus.STOPPED, Map.of());
+        when(restClient.targetAsyncProfilerStatus(targetId)).thenReturn(mockStatus);
+
+        assertFalse(cryostatMCP.targetSupportsAsyncProfiler(targetId));
+    }
+
+    @Test
+    void testTargetSupportsAsyncProfilerFalseWhenUnknown() {
+        long targetId = 123L;
+        io.cryostat.mcp.model.AsyncProfilerStatus mockStatus =
+                new io.cryostat.mcp.model.AsyncProfilerStatus(
+                        io.cryostat.mcp.model.AsyncProfilerStatus.ProfilerStatus.UNKNOWN,
+                        Map.of("perf_events", List.of("cpu")));
+        when(restClient.targetAsyncProfilerStatus(targetId)).thenReturn(mockStatus);
+
+        assertFalse(cryostatMCP.targetSupportsAsyncProfiler(targetId));
+    }
+
+    @Test
+    void testTargetSupportsAsyncProfilerFalseWhenNotAgentConnected() {
+        long targetId = 123L;
+        Response response = mock(Response.class);
+        when(response.getStatus()).thenReturn(400);
+        WebApplicationException exception = mock(WebApplicationException.class);
+        when(exception.getResponse()).thenReturn(response);
+        when(restClient.targetAsyncProfilerStatus(targetId)).thenThrow(exception);
+
+        assertFalse(cryostatMCP.targetSupportsAsyncProfiler(targetId));
+    }
+
+    @Test
+    void testTargetSupportsAsyncProfilerFalseOnConnectionFailure() {
+        long targetId = 123L;
+        when(restClient.targetAsyncProfilerStatus(targetId))
+                .thenThrow(new RuntimeException("connection reset"));
+
+        assertFalse(cryostatMCP.targetSupportsAsyncProfiler(targetId));
+    }
+
+    @Test
+    void testTargetSupportsAsyncProfilerRethrowsNon400WebApplicationException() {
+        long targetId = 123L;
+        Response response = mock(Response.class);
+        when(response.getStatus()).thenReturn(500);
+        WebApplicationException exception = mock(WebApplicationException.class);
+        when(exception.getResponse()).thenReturn(response);
+        when(restClient.targetAsyncProfilerStatus(targetId)).thenThrow(exception);
+
+        assertThrows(
+                WebApplicationException.class,
+                () -> cryostatMCP.targetSupportsAsyncProfiler(targetId));
     }
 
     @Test

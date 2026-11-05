@@ -42,6 +42,7 @@ import java.util.function.Supplier;
 import io.cryostat.mcp.model.ActiveRecordingsFilter;
 import io.cryostat.mcp.model.ArchivedRecordingDescriptor;
 import io.cryostat.mcp.model.ArchivedRecordingDirectory;
+import io.cryostat.mcp.model.AsyncProfilerStatus;
 import io.cryostat.mcp.model.DiscoveryNode;
 import io.cryostat.mcp.model.DiscoveryNodeFilter;
 import io.cryostat.mcp.model.EventTemplate;
@@ -277,6 +278,24 @@ public class CryostatMCP {
             String templateType,
             long duration)
             throws JsonProcessingException {
+        return startTargetRecording(
+                targetId, recordingName, templateName, templateType, duration, List.of());
+    }
+
+    public RecordingDescriptor startTargetRecording(
+            long targetId,
+            String recordingName,
+            String templateName,
+            String templateType,
+            long duration,
+            List<String> asprofEvents)
+            throws JsonProcessingException {
+        if (!asprofEvents.isEmpty() && !supports(CryostatFeature.ASYNC_PROFILER_JFRSYNC)) {
+            throw new UnsupportedOperationException(
+                    "asprofEvents requires Cryostat "
+                            + CryostatFeature.ASYNC_PROFILER_JFRSYNC.minimumVersionString()
+                            + " or newer");
+        }
         return rest.startRecording(
                 targetId,
                 recordingName,
@@ -284,7 +303,50 @@ public class CryostatMCP {
                 duration,
                 true,
                 mapper.writeValueAsString(Map.of("labels", Map.of("autoanalyze", "true"))),
-                true);
+                true,
+                asprofEvents);
+    }
+
+    public AsyncProfilerStatus getTargetAsyncProfilerStatus(long targetId) {
+        return rest.targetAsyncProfilerStatus(targetId);
+    }
+
+    public Map<String, List<String>> listTargetAsyncProfilerEventTypes(long targetId) {
+        return getTargetAsyncProfilerStatus(targetId).availableEvents();
+    }
+
+    /**
+     * Swallows both the "target is not Agent-connected" {@code 400} and any slow failure/timeout
+     * resulting from the target's agent not having async-profiler loaded at all -- see {@code
+     * cryostat/docs/2026-10-14-async-profiler-no-status.md} for why the latter does not currently
+     * surface as a clean error. {@code ProfilerStatus.UNKNOWN} is treated as "not supported" (the
+     * conservative choice), not "supported but indeterminate".
+     *
+     * <p>This answers only whether async-profiler is available on the target in isolation -- it
+     * does not check whether a standalone profile or another jfrsync recording is already using the
+     * target's one available profiling session, so a {@code true} result here does not guarantee a
+     * subsequent {@link #startTargetRecording(long, String, String, String, long, List)} call with
+     * non-empty {@code asprofEvents} will succeed.
+     */
+    public boolean targetSupportsAsyncProfiler(long targetId) {
+        try {
+            AsyncProfilerStatus status = getTargetAsyncProfilerStatus(targetId);
+            boolean knownAvailable =
+                    status.status() == AsyncProfilerStatus.ProfilerStatus.STOPPED
+                            || status.status() == AsyncProfilerStatus.ProfilerStatus.RUNNING;
+            return knownAvailable && !status.availableEvents().isEmpty();
+        } catch (WebApplicationException e) {
+            if (e.getResponse() != null && e.getResponse().getStatus() == 400) {
+                return false;
+            }
+            throw e;
+        } catch (RuntimeException e) {
+            // Slow failure/timeout from the agent's ensureProfilerAvailable() gap -- see
+            // cryostat/docs/2026-10-14-async-profiler-no-status.md. Also "not supported" from
+            // this tool's perspective. Deliberately broad: do not narrow this catch without
+            // re-reading that doc, since the failure shape here is not a specific exception type.
+            return false;
+        }
     }
 
     public StoppedRecording stopTargetRecording(long targetId, String recordingName) {

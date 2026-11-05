@@ -28,7 +28,9 @@ public enum CryostatFeature {
     AUDIT(CryostatServerVersions.V4_2),
     RECORDING_ANALYTICS(CryostatServerVersions.V4_2),
     TARGET_ALIAS_FILTER(CryostatServerVersions.V4_2_1),
-    RECORDING_SYNTHESIS(CryostatServerVersions.V4_3);
+    RECORDING_SYNTHESIS(CryostatServerVersions.V4_3),
+    ASYNC_PROFILER(CryostatServerVersions.V4_2),
+    ASYNC_PROFILER_JFRSYNC(CryostatServerVersions.V4_3);
 
     private final String minimumVersionString;
     private final CryostatVersion minimumVersion;

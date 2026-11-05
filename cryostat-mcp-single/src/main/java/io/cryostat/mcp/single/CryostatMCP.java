@@ -18,11 +18,15 @@ package io.cryostat.mcp.single;
 import java.util.Collection;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 
+import io.cryostat.mcp.CryostatFeature;
 import io.cryostat.mcp.CryostatServerVersions;
 import io.cryostat.mcp.CryostatToolMetadata;
+import io.cryostat.mcp.CryostatVersion;
 import io.cryostat.mcp.JfrAnalyticsQueries;
 import io.cryostat.mcp.model.ArchivedRecordingDirectory;
+import io.cryostat.mcp.model.AsyncProfilerStatus;
 import io.cryostat.mcp.model.DiscoveryNode;
 import io.cryostat.mcp.model.DiscoveryNodeFilter;
 import io.cryostat.mcp.model.EventTemplate;
@@ -36,6 +40,7 @@ import io.quarkiverse.mcp.server.MetaField;
 import io.quarkiverse.mcp.server.Tool;
 import io.quarkiverse.mcp.server.ToolArg;
 import jakarta.inject.Inject;
+import jakarta.ws.rs.WebApplicationException;
 import jakarta.ws.rs.core.Response;
 import org.eclipse.microprofile.rest.client.inject.RestClient;
 
@@ -259,6 +264,21 @@ public class CryostatMCP {
                     Start a new fixed-duration JDK Flight Recording on a Target JVM.
                     When the recording completes, Cryostat will automatically capture the data
                     and perform an automated analysis of its contents.
+
+                    The optional asprofEvents parameter enables async-profiler's "jfrsync" mode
+                    alongside the usual JFR event template, on Cryostat Agent-connected targets only
+                    (requires Cryostat 4.3 or newer). Event names must come from
+                    listTargetAsyncProfilerEventTypes for this same target -- they are dynamic per
+                    target/async-profiler version/OS and must never be guessed or reused from a
+                    different target. Call targetSupportsAsyncProfiler first to check feasibility.
+                    Enabling a cpu/alloc/lock-related asprof event silently disables the
+                    corresponding built-in JDK event(s) in the selected template for the overlapping
+                    categories -- the template's settings there are superseded, not merged with the
+                    asprof event. This tool does not detect or prevent conflicts with any other
+                    concurrent async-profiler usage on the same target (e.g. a standalone profile or
+                    another jfrsync recording already using the target's one available profiling
+                    session) -- such a conflict simply fails this tool call with whatever error
+                    Cryostat returns.
                     """)
     @MetaField(
             prefix = CryostatToolMetadata.META_PREFIX,
@@ -281,8 +301,23 @@ public class CryostatMCP {
                             required = true)
                     String templateType,
             @ToolArg(description = "The duration of the recording in seconds.", required = true)
-                    long duration)
+                    long duration,
+            @ToolArg(
+                            description =
+                                    "async-profiler event names to enable in jfrsync mode alongside"
+                                        + " this recording. Cryostat Agent-connected targets only;"
+                                        + " requires Cryostat 4.3 or newer. Omit for a plain JFR"
+                                        + " recording.",
+                            required = false)
+                    List<String> asprofEvents)
             throws JsonProcessingException {
+        List<String> events = asprofEvents == null ? List.of() : asprofEvents;
+        if (!events.isEmpty() && !supports(CryostatFeature.ASYNC_PROFILER_JFRSYNC)) {
+            throw new UnsupportedOperationException(
+                    "asprofEvents requires Cryostat "
+                            + CryostatFeature.ASYNC_PROFILER_JFRSYNC.minimumVersionString()
+                            + " or newer");
+        }
         return rest.startRecording(
                 targetId,
                 recordingName,
@@ -290,7 +325,91 @@ public class CryostatMCP {
                 duration,
                 true,
                 mapper.writeValueAsString(Map.of("labels", Map.of("autoanalyze", "true"))),
-                true);
+                true,
+                events);
+    }
+
+    @Tool(
+            description =
+                    """
+                    Get a Target's raw async-profiler status: whether the profiler is currently
+                    stopped/running, and which async-profiler event types are available on that
+                    target, grouped by category. Throws for targets that are not Cryostat
+                    Agent-connected (expected, not a bug). May also fail (including a slow timeout)
+                    if the target's agent is Agent-connected but does not have async-profiler loaded
+                    at all. Prefer targetSupportsAsyncProfiler for a quick yes/no check.
+                    """)
+    @MetaField(
+            prefix = CryostatToolMetadata.META_PREFIX,
+            name = CryostatToolMetadata.MIN_CRYOSTAT_VERSION_META_NAME,
+            value = CryostatServerVersions.V4_2)
+    public AsyncProfilerStatus getTargetAsyncProfilerStatus(
+            @ToolArg(description = "The Target's ID.", required = true) long targetId) {
+        return rest.targetAsyncProfilerStatus(targetId);
+    }
+
+    @Tool(
+            description =
+                    """
+                    List the async-profiler event types available on a Target, grouped by category.
+                    The category keys are stable, but the event names within each category are
+                    dynamic -- they depend on the target's loaded async-profiler build, JVM version,
+                    and OS/kernel configuration, and can differ between targets. Always query this
+                    fresh for the specific target you intend to use with startTargetRecording's
+                    asprofEvents parameter; never assume or reuse a list from a different target.
+                    """)
+    @MetaField(
+            prefix = CryostatToolMetadata.META_PREFIX,
+            name = CryostatToolMetadata.MIN_CRYOSTAT_VERSION_META_NAME,
+            value = CryostatServerVersions.V4_2)
+    public Map<String, List<String>> listTargetAsyncProfilerEventTypes(
+            @ToolArg(description = "The Target's ID.", required = true) long targetId) {
+        return rest.targetAsyncProfilerStatus(targetId).availableEvents();
+    }
+
+    @Tool(
+            description =
+                    """
+                    Check whether a Target currently has async-profiler available and usable. This
+                    only checks async-profiler's availability on the target in isolation -- a true
+                    result does not guarantee a subsequent startTargetRecording call with asprofEvents
+                    will succeed, since another standalone profile or jfrsync recording may already be
+                    using the target's one available profiling session. Call this before passing
+                    asprofEvents to startTargetRecording. Note: a false result can currently take
+                    several seconds to arrive for a Cryostat Agent-connected target whose agent lacks
+                    async-profiler, due to a known upstream reliability gap in the status check.
+                    """)
+    @MetaField(
+            prefix = CryostatToolMetadata.META_PREFIX,
+            name = CryostatToolMetadata.MIN_CRYOSTAT_VERSION_META_NAME,
+            value = CryostatServerVersions.V4_2)
+    public Boolean targetSupportsAsyncProfiler(
+            @ToolArg(description = "The Target's ID.", required = true) long targetId) {
+        try {
+            AsyncProfilerStatus status = rest.targetAsyncProfilerStatus(targetId);
+            boolean knownAvailable =
+                    status.status() == AsyncProfilerStatus.ProfilerStatus.STOPPED
+                            || status.status() == AsyncProfilerStatus.ProfilerStatus.RUNNING;
+            return knownAvailable && !status.availableEvents().isEmpty();
+        } catch (WebApplicationException e) {
+            if (e.getResponse() != null && e.getResponse().getStatus() == 400) {
+                return false;
+            }
+            throw e;
+        } catch (RuntimeException e) {
+            // Slow failure/timeout from the agent's ensureProfilerAvailable() gap -- see
+            // cryostat/docs/2026-10-14-async-profiler-no-status.md. Also "not supported" from
+            // this tool's perspective. Deliberately broad: do not narrow this catch without
+            // re-reading that doc, since the failure shape here is not a specific exception type.
+            return false;
+        }
+    }
+
+    private boolean supports(CryostatFeature feature) {
+        return Optional.ofNullable(rest.health())
+                .flatMap(health -> CryostatVersion.parse(health.cryostatVersion()))
+                .map(version -> version.isAtLeast(feature.minimumVersion()))
+                .orElse(false);
     }
 
     @Tool(

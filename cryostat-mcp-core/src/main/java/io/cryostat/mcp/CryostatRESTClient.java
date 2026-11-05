@@ -20,6 +20,7 @@ import java.util.List;
 import java.util.Map;
 
 import io.cryostat.mcp.model.ArchivedRecordingDirectory;
+import io.cryostat.mcp.model.AsyncProfilerStatus;
 import io.cryostat.mcp.model.DiscoveryNode;
 import io.cryostat.mcp.model.EventTemplate;
 import io.cryostat.mcp.model.Health;
@@ -97,7 +98,12 @@ public interface CryostatRESTClient {
             @FormParam("duration") long duration,
             @FormParam("toDisk") boolean toDisk,
             @FormParam("metadata") String metadata,
-            @FormParam("archiveOnStop") boolean archiveOnStop);
+            @FormParam("archiveOnStop") boolean archiveOnStop,
+            @FormParam("asprofEvents") List<String> asprofEvents);
+
+    @GET
+    @Path("/api/beta/targets/{targetId}/async-profiler/status")
+    AsyncProfilerStatus targetAsyncProfilerStatus(long targetId);
 
     @GET
     @Path("/api/v4.1/metrics/reports")
